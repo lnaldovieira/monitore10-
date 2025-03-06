@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alerta de 10% - Criptomoedas Binance</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin-top: 20px; }
+        #status { font-size: 18px; margin-top: 10px; }
+        #historyTable { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid black; padding: 8px; text-align: center; }
+        th { background-color: #f4f4f4; }
+        button { margin-top: 10px; padding: 10px; font-size: 16px; cursor: pointer; }
+        #notifications { font-size: 16px; color: red; font-weight: bold; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>🚀 Alerta de 10% - Binance</h1>
+    <p id="status">🔄 Buscando tokens...</p>
+    <button onclick="clearHistory()">🗑️ Limpar Histórico</button>
+
+    <h2>📜 Tokens que Atingiram 9% e 10% de Alta</h2>
+    <p id="notifications"></p>
+    <table id="historyTable">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Token</th>
+                <th>Abertura</th>
+                <th>Valor Atual</th>
+                <th>Variação (%)</th>
+                <th>Horário</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody id="history"></tbody>
+    </table>
+
+    <script>
+        let tokenList = [];
+        let tokenData = {};
+        let alertHistory = [];
+        let alertCounter = 0;
+        let lastResetDate = new Date().toISOString().split("T")[0];
+
+        // Solicitar permissão para notificações ao carregar a página
+        document.addEventListener("DOMContentLoaded", () => {
+            if ("Notification" in window) {
+                Notification.requestPermission().then(permission => {
+                    console.log("Permissão de notificação:", permission);
+                    if (permission !== "granted") {
+                        document.getElementById("notifications").textContent = "⚠️ Ative as notificações no navegador!";
+                    }
+                });
+            }
+        });
+
+        async function getAllTokens() {
+            try {
+                let response = await fetch("https://api.binance.com/api/v3/exchangeInfo");
+                let data = await response.json();
+                tokenList = data.symbols
+                    .filter(symbol => symbol.quoteAsset === "USDT" && symbol.status === "TRADING")
+                    .map(symbol => symbol.symbol.toLowerCase());
+
+                document.getElementById("status").textContent = `📡 Monitorando ${tokenList.length} tokens...`;
+
+                // Iniciar monitoramento de preços
+                connectWebSocket();
+            } catch (error) {
+                document.getElementById("status").textContent = "❌ Erro ao buscar tokens.";
+            }
+        }
+
+        function connectWebSocket() {
+            let streams = tokenList.map(token => `${token}@kline_1d`).join("/");
+            let socket = new WebSocket(`wss://stream.binance.com:9443/ws/${streams}`);
+
+            socket.onmessage = function(event) {
+                let data = JSON.parse(event.data);
+                let token = data.s;
+                let openPrice = parseFloat(data.k.o); // Preço de abertura correto
+                let currentPrice = parseFloat(data.k.c); // Preço atual correto
+                let percentageChange = ((currentPrice - openPrice) / openPrice) * 100;
+                let now = new Date();
+                let timeString = now.toLocaleTimeString();
+                let currentDate = now.toISOString().split("T")[0];
+
+                console.log(`Token: ${token} | Abertura: ${openPrice} | Atual: ${currentPrice} | Variação: ${percentageChange.toFixed(2)}%`);
+
+                // Resetar histórico diariamente
+                if (currentDate !== lastResetDate) {
+                    clearHistory();
+                    lastResetDate = currentDate;
+                }
+
+                if (!tokenData[token]) {
+                    tokenData[token] = { open: openPrice, alerted9: false, alerted10: false, status: "🔄 Aguardando" };
+                }
+
+                // Notificar ao atingir 9%
+                if (!tokenData[token].alerted9 && percentageChange >= 9) {
+                    tokenData[token].alerted9 = true;
+                    sendNotification(token, 9);
+                    tokenData[token].status = "⚠️ Aguardando 10%";
+                    updateHistory(token, openPrice, currentPrice, percentageChange, timeString, "⚠️ Aguardando 10%");
+                }
+
+                // Notificar ao atingir 10%
+                if (!tokenData[token].alerted10 && percentageChange >= 10) {
+                    alertCounter++;
+                    tokenData[token].alerted10 = true;
+                    sendNotification(token, 10);
+                    tokenData[token].status = "🔄 Aguardando 12%";
+                    updateHistory(token, openPrice, currentPrice, percentageChange, timeString, "🔄 Aguardando 12%");
+                }
+
+                // Verificar se atingiu 12%
+                if (tokenData[token].alerted10 && percentageChange >= 12) {
+                    tokenData[token].status = "✅ Sucesso";
+                    updateHistoryTable();
+                }
+            };
+        }
+
+        function updateHistory(token, openPrice, currentPrice, percentageChange, timeString, status) {
+            let existingEntry = alertHistory.find(entry => entry.token === token);
+            if (existingEntry) {
+                existingEntry.currentPrice = currentPrice;
+                existingEntry.percentageChange = percentageChange;
+                existingEntry.time = timeString;
+                existingEntry.status = status;
+            } else {
+                alertCounter++;
+                alertHistory.push({
+                    id: alertCounter,
+                    token,
+                    openPrice,
+                    currentPrice,
+                    percentageChange,
+                    time: timeString,
+                    status
+                });
+            }
+            updateHistoryTable();
+        }
+
+        function updateHistoryTable() {
+            document.getElementById("history").innerHTML = alertHistory.map(entry => {
+                return `<tr>
+                    <td>${entry.id}</td>
+                    <td>${entry.token}</td>
+                    <td>$${entry.openPrice.toFixed(4)}</td>
+                    <td>$${entry.currentPrice.toFixed(4)}</td>
+                    <td>${entry.percentageChange.toFixed(2)}%</td>
+                    <td>${entry.time}</td>
+                    <td>${entry.status}</td>
+                </tr>`;
+            }).join("");
+        }
+
+        function sendNotification(token, percentage) {
+            let message = `🚨 ${token} atingiu +${percentage}%!`;
+            console.log(message);
+
+            if ("Notification" in window && Notification.permission === "granted") {
+                new Notification(message);
+                document.getElementById("notifications").textContent = `🚀 Alerta: ${message}`;
+            } else {
+                alert(message); // Fallback para navegadores sem suporte
+            }
+        }
+
+        function clearHistory() {
+            alertHistory = [];
+            alertCounter = 0;
+            tokenData = {};
+            document.getElementById("history").innerHTML = "";
+        }
+
+        getAllTokens();
+    </script>
+</body>
+</html>
